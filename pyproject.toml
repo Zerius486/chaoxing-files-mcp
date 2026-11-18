@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "chaoxing-files-mcp"
+version = "0.1.0"
+description = "Read-only Chaoxing file discovery and download MCP"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+dependencies = ["mcp>=1.20,<2", "httpx>=0.28,<1", "beautifulsoup4>=4.12,<5"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10", "ruff>=0.12"]
+
+[project.scripts]
+chaoxing-files-mcp = "chaoxing_files.server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/chaoxing_files"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+extend-exclude = [".uv-cache", ".venv", ".chaoxing", "downloads"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+
+[[tool.uv.index]]
+name = "tuna"
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+default = true
+

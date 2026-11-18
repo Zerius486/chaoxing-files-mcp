@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "chaoxing-files": {
+      "command": "C:/path/to/chaoxing-files-mcp/.venv/Scripts/python.exe",
+      "args": ["-m", "chaoxing_files.server"],
+      "env": {
+        "CHAOXING_COOKIE_FILE": "C:/path/to/chaoxing-files-mcp/.chaoxing/cookies.json",
+        "CHAOXING_DOWNLOAD_DIR": "C:/path/to/chaoxing-files-mcp/downloads"
+      }
+    }
+  }
+}
