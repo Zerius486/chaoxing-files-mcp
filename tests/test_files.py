@@ -188,3 +188,63 @@ def test_verified_chaoxing_storage_domain(make_client):
     assert client.download(rid)["bytes"] == len(b"%PDF-storage")
     with pytest.raises(ChaoxingError, match="unapproved.cldisk.com"):
         client.validate_url("https://unapproved.cldisk.com/file.pdf")
+
+
+def test_verifycode_studychapter_rejected_on_regular_page(make_client):
+    client = make_client(
+        lambda _: httpx.Response(
+            302, headers={"location": "https://mooc1.chaoxing.com/verifyCode/studychapter"}
+        )
+    )
+    with pytest.raises(ChaoxingError, match="验证码"):
+        client.inspect_page("https://mooc1.chaoxing.com/visit/courses")
+
+
+def test_studentstudy_falls_back_to_knowledge_cards(make_client):
+    seen = []
+
+    def handler(request):
+        seen.append(request.url.path)
+        if request.url.path.endswith("/mycourse/studentstudy"):
+            assert "Mozilla/5.0 (" in request.headers["user-agent"]
+            assert request.headers["referer"] == "https://mooc1.chaoxing.com/"
+            return httpx.Response(
+                302,
+                headers={
+                    "location": "https://mooc1.chaoxing.com/verifyCode/studychapter"
+                },
+            )
+        if request.url.path == "/knowledge/cards":
+            params = dict(request.url.params)
+            assert params["courseid"] == "265717871"
+            assert params["clazzid"] == "151043639"
+            assert params["knowledgeid"] == "1205310213"
+            assert params["num"] == "0"
+            assert params["ut"] == "s"
+            return httpx.Response(
+                200,
+                text='<title>章节卡片</title><iframe data=\'{"objectid":"chap123","name":"第一章课件.pdf"}\'></iframe>',
+            )
+        return httpx.Response(404)
+
+    result = make_client(handler).inspect_page(
+        "https://mooc1.chaoxing.com/mooc-ans/mycourse/studentstudy?chapterId=1205310213&courseId=265717871&clazzid=151043639&enc=abc"
+    )
+    assert seen == ["/mooc-ans/mycourse/studentstudy", "/knowledge/cards"]
+    assert len(result["files"]) == 1
+    assert result["files"][0]["object_id"] == "chap123"
+    assert result["files"][0]["filename"] == "第一章课件.pdf"
+    assert "/knowledge/cards" in result["note"]
+
+
+def test_studentstudy_both_blocked_raises_clear_error(make_client):
+    def handler(request):
+        return httpx.Response(
+            200,
+            text="<html><script>location.href='/verifyCode/studychapter'</script></html>",
+        )
+
+    with pytest.raises(ChaoxingError, match="浏览器环境校验"):
+        make_client(handler).inspect_page(
+            "https://mooc1.chaoxing.com/mycourse/studentstudy?chapterId=1&courseId=2&clazzid=3"
+        )

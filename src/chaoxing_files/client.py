@@ -8,7 +8,7 @@ import time
 from collections import deque
 from contextlib import contextmanager
 from pathlib import Path
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import parse_qs, urljoin, urlsplit, urlunsplit
 
 import httpx
 from bs4 import BeautifulSoup
@@ -43,7 +43,14 @@ class ChaoxingClient:
             transport=transport,
             timeout=30,
             follow_redirects=False,
-            headers={"User-Agent": "Mozilla/5.0 ChaoxingFilesMCP/0.1"},
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/131.0.0.0 Safari/537.36"
+                ),
+                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            },
         )
         self.resources: dict[str, dict] = {}
         self._cookie_stamp = None
@@ -128,7 +135,27 @@ class ChaoxingClient:
         self.load_cookies()
         for _ in range(8):
             self.validate_url(url)
-            headers = {"Referer": "https://mooc1.chaoxing.com/"} if download else {}
+            if any(
+                s in url.lower()
+                for s in (
+                    "antispider",
+                    "passport2.chaoxing.com/login",
+                    "verifycode/studychapter",
+                )
+            ):
+                raise ChaoxingError(
+                    "登录已失效、无访问权限或需要人工验证码，请在浏览器完成后更新 Cookie。"
+                )
+            host = (urlsplit(url).hostname or "").lower()
+            headers = (
+                {"Referer": "https://mooc1.chaoxing.com/"}
+                if download
+                or any(
+                    host == d or host.endswith("." + d)
+                    for d in ("chaoxing.com", "chaoxing.com.cn")
+                )
+                else {}
+            )
             with self.http.stream("GET", url, headers=headers) as response:
                 if response.is_redirect:
                     location = response.headers.get("location")
@@ -138,7 +165,11 @@ class ChaoxingClient:
                     continue
                 if response.status_code in (202, 401, 403) or any(
                     s in str(response.url).lower()
-                    for s in ("antispider", "passport2.chaoxing.com/login")
+                    for s in (
+                        "antispider",
+                        "passport2.chaoxing.com/login",
+                        "verifycode/studychapter",
+                    )
                 ):
                     raise ChaoxingError(
                         "登录已失效、无访问权限或需要人工验证码，请在浏览器完成后更新 Cookie。"
@@ -160,6 +191,7 @@ class ChaoxingClient:
             if (
                 soup.select_one('input[type="password"]')
                 or "antispiderShowVerify" in text
+                or "verifycode/studychapter" in text.lower()
             ):
                 raise ChaoxingError("需要重新登录或人工验证，请更新 Cookie。")
             return text, str(r.url)
@@ -209,8 +241,45 @@ class ChaoxingClient:
         self.resources[resource_id] = dict(item)
         return {"resource_id": resource_id, **item}
 
+    @staticmethod
+    def _studentstudy_cards_url(url: str) -> str | None:
+        parts = urlsplit(url)
+        if not re.search(r"/mycourse/studentstudy(?:/|$)", parts.path, re.I):
+            return None
+        query = {k.lower(): v[0] for k, v in parse_qs(parts.query).items()}
+        course_id = query.get("courseid", "")
+        class_id = query.get("clazzid") or query.get("classid", "")
+        chapter_id = query.get("knowledgeid") or query.get("chapterid", "")
+        if not (course_id and class_id and chapter_id):
+            return None
+        params = {
+            "clazzid": class_id,
+            "courseid": course_id,
+            "knowledgeid": chapter_id,
+            "num": query.get("num", "0"),
+            "ut": "s",
+        }
+        for key in ("cpi", "openc"):
+            if query.get(key):
+                params[key] = query[key]
+        base = urlunsplit((parts.scheme, parts.netloc, "/knowledge/cards", "", ""))
+        return update_query(base, **params)
+
     def inspect_page(self, url: str) -> dict:
-        text, final_url = self.get_page(url)
+        fallback_note = ""
+        try:
+            text, final_url = self.get_page(url)
+        except ChaoxingError as exc:
+            cards_url = self._studentstudy_cards_url(url)
+            if not cards_url:
+                raise
+            try:
+                text, final_url = self.get_page(cards_url)
+            except (ChaoxingError, httpx.HTTPStatusError):
+                raise ChaoxingError(
+                    "章节学习页及卡片接口均触发浏览器环境校验或无权限，请在浏览器打开该章节完成验证后更新 Cookie。"
+                ) from exc
+            fallback_note = "章节学习页触发校验，已自动回退直连 /knowledge/cards 解析；"
         if is_materials_url(final_url):
             materials = parse_materials(text, final_url)
             if materials.pop("recognized"):
@@ -235,7 +304,9 @@ class ChaoxingClient:
             "files": files,
             "links": links,
             "skipped_links": skipped,
-            "note": "仅解析当前页面。可继续 inspect_page 浏览 links 中的目录、分页和 iframe；不执行 JavaScript。",
+            "note": (
+                f"{fallback_note}仅解析当前页面。可继续 inspect_page 浏览 links 中的目录、分页和 iframe；不执行 JavaScript。"
+            ),
         }
 
     def _register_materials(self, parsed: dict, url: str) -> dict:
